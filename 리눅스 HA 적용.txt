@@ -1,0 +1,209 @@
+구성 환경
+
+* 노드 1
+호스트네임: wolf1
+ip주소: 172.31.14.161
+
+* 노드 2
+호스트네임: wolf2
+ip주소: 172.31.0.222
+
+가상 IP : 172.31.15.30
+
+1. /etc/hosts 에 추가
+# sudo vim /etc/hosts
+
+54.180.138.85   wolf1
+3.34.49.94      wolf2
+172.31.15.30    wolf
+
+2. corosync, pacemaker 설치(양쪽 노드)
+corosync, pacemaker를 양쪽 노드 모두 설치해준다. 여기서는 yum을 이용해 rpm 패키지로 설치한다.
+
+# sudo yum install -y pacemaker corosync pcs psmisc policycoreutils-python
+
+3. selinux와 방화벽을 사용하지 않음으로 미리 설정?
+# sudo vim /etc/sysconfig/selinux
+SELINUX=disabled
+
+방화벽이 되어있는 곳은 TCP 포트 2224, 3121, 21064 그리고 UDP 포트 5405를 열어주어야 한다.
+# sudo iptables -A INPUT -p tcp --dport 2224  -j ACCEPT
+# sudo iptables -A INPUT -p tcp --dport 3121 -j ACCEPT
+# sudo iptables -A INPUT -p tcp --dport 21064  -j ACCEPT
+# sudo iptables -A INPUT -p udp --dport 5405 -j ACCEPT
+# sudo iptables -A OUTPUT -p tcp --dport 2224 -j ACCEPT
+# sudo iptables -A OUTPUT -p tcp --dport 3121 -j ACCEPT
+# sudo iptables -A OUTPUT -p tcp --dport 21064 -j ACCEPT
+# sudo iptables -A OUTPUT -p udp  --dport 5405 -j ACCEPT
+
+4. 양쪽 노드 모두에서 pcs 데몬을 실행한다. 양쪽노드에서 pcsd를 실행하고, (재부팅시 자동으로 실행되도록) 서비스를 enable 시킨다.
+# sudo systemctl start pcsd.service
+# sudo systemctl enable pcsd.service
+
+5. 양쪽노드에서, (자동으로 생성된) hscluster 계정의 비밀번호를 양쪽 동일하게 설정한다.
+# sudo passwd hacluster ( 비밀번호: tncha1101! )
+
+6. corosync를 설정한다. 한쪽 노드에서 아래 커맨드로 hacluster 사용자로 인증한다.
+# sudo pcs cluster auth wolf1 wolf2 ( username: hacluster )
+
+7. 한쪽 노드에서 아래 커맨드로 corosync를 구성하고 다른 노드와 동기화한다.
+# sudo pcs cluster setup --name wolf_cluster wolf1 wolf2
+
+8. 클러스터를 실행한다.
+# sudo pcs cluster start wolf1
+# sudo pcs cluster start wolf2
+
+9. 클러스터 통신을 확인한다.
+# sudo corosync-cfgtool -s
+
+10. 멤버쉽과 쿼럼을 확인한다.
+# sudo corosync-cmapctl | egrep -i members
+# sudo pcs status corosync
+# sudo pcs status
+
+11. Active/Passive 클러스터 생성
+# sudo crm_verify -L -V
+하면 STONITH 부분에서 오류가 발생한다.
+데이타의 무결성을 확보하기 위해 기본으로 STONITH가 활성화되어 있는데 이것을 비활성하고 다시 확인해보면 아무런 오류가 발생하지 않는다.
+
+# sudo pcs property set stonith-enabled=false
+# sudo pcs property
+# sudo crm_verify -L -V
+
+11.2. pcs 설정 추가
+no-quorum-policy: 클러스터에 quorum이 없을 때의 수행작업을 설정합니다.
+아래 설정을 안할 경우 failover가 부자연스러울 수 있다고 한다.
+# sudo pcs property set no-quorum-policy=ignore
+
+12. 가상 IP 리소스 생성
+# sudo pcs resource create VirtualIP ocf:heartbeat:IPaddr2 ip=172.31.15.30 cidr_netmask=24 op monitor interval=30s
+확인
+# sudo pcs status
+# ip addr
+
+13. pcs status를 했을 때 Current DC에 있는 녀석이 현재 바라보고 있는 녀석인 것 같다.
+ 이녀석을 끈다 (예를들어 wolf1을 바라보고 있다고 하면)
+# sudo pcs cluster stop wolf1
+이것이 안되면
+# sudo pcs cluster stop wolf1 --force
+
+이렇게 했을 때 wolf2 node에서 pcs status를 하면 Current DC가 wolf2를 바라보고 있다면 정상
+그리고다시 pcs cluster start wolf1을 하고 pcs status를 했을 때 여전히 wolf2를 바라보고 있으면 정상
+
+
+14. resource stickniess – 자원의 이동에는 대부분 가동중지 시간이 필요하며, 데이타베이스처럼 복잡한 서비스는 이 시간이 길어질 수 있다.
+ 이 문제를 해결하기위해서 pacemaker에서 제공하는 개념이 리소스 stickiness. 기본값은 0 이지만, 이 숫자를 늘여서 서비스가 이동하는 것을 제어할 수 있다.
+# sudo pcs resource defaults
+# sudo pcs resource defaults resource-stickiness=60
+# sudo pcs resource defaults
+
+리소스 (지금은 Virtual IP) 가 특정 노드에 할당되고 난 뒤, 해당 노드가 Fail하면 리소스가 다른 노드로 옮겨가는 Failover가 발생하게 된다. 이 때, Fail했던 노드가 다시 되살아날 경우 리소스가 다시 이동하지 않도록 설정하는 값이 resource-stickiness라고 한다
+
+15. mysql resource 등록
+먼저 mariadb를 내린다.
+# sudo systemctl stop mariadb
+# sudo pcs resource create MariaDBService ocf:heartbeat:mysql datadir=/var/data/mysql socket=/var/data/mysql/mysql.sock pid=/var/data/mysql/mysql.pid config=/etc/my.cnf op monitor interval=30s
+# sudo pcs resource create MariaDBService ocf:heartbeat:mysql datadir=/var/data/mysql socket=/var/data/mysql/mysql.sock pid=/var/data/mysql/mysql.pid config=/etc/my.cnf replication_user=pgteam replication_passwd=pgteam1101! replication_port=3306 op promote timeout=120 op demote timeout=120 op monitor role=Master timeout=30 interval=10 op monitor role=Slave timeout=30 interval=30
+
+16. pcs status 했을 때
+VirtualIP      (ocf::heartbeat:IPaddr2):       Started wolf1
+ MariaDBService (ocf::heartbeat:mysql): Started wolf2
+VIP는 wolf1 에서, mariaDB는 wolf2 에서 실행되고 있다.
+이 문제는 colocation constraint 두 리소스를 묶어줌으로써 해결된다.
+# sudo pcs constraint
+# sudo pcs constraint colocation add VirtualIP with MariaDBService INFINITY
+
+17. 만약 어떤 서비스가 먼저 실행되고 난 이후 서비스가 실행되어야 할 필요가 있을때는 아래와 같은 방법을 사용한다. 아래는 VirtualIP가 먼저 실행된 후 MariaDBService가 실행되도록 한다.
+# sudo pcs constraint order VirtualIP then MariaDBService
+
+- 수동으로 리소스 강제 이동하기
+리소스를 강제로 다른 노드로 이동하기 위해서는 constraint location의 스코어를 INFINITY로 변경하면된다.
+# sudo pcs constraint location VirtualIP prefers wolf1=INFINITY
+# sudo pcs constraint location MariaDBService prefers wolf1=INFINITY
+
+constraint location 삭제는 아래와 같이 할 수 있다.
+현재의 constraint를 확인하고,
+# sudo pcs constraint --full
+# sudo pcs constraint remove location-MariaDBService-wolf1-INFINITY
+# sudo pcs constraint remove location-VirtualIP-wolf1-INFINITY
+
+
+로그 확인하려면 여기서 확인
+/var/log/cluster/corosync.log
+/var/log/pcsd/pcsd.log
+/var/log/pacemaker.log
+
+18. active - standby 를 만든다.
+# sudo pcs cluster standby wolf2
+
+1번기에 서비스되는 mysql를 kill -9로 종료했다 -> 2번기로 FailOver 할 걸로 예상했는데... -> 1번기에서 다시 살아났다....
+FailOver를 테스트해보자
+
+
+------
+자바경로 : /usr/local/java/jdk1.8.0_251
+톰캣경로 : /usr/local/tomcat/apache-tomcat-9.0.34
+
+자바설치후 java -version 해서 안되면
+# sudo yum install ld-linux.so.2
+
+---- 톰캣 리소스 등록
+# sudo pcs resource create TomcatService ocf:heartbeat:tomcat java_home=/usr/local/java/jdk1.8.0_251 catalina_home=/usr/local/tomcat/apache-tomcat-9.0.34 tomcat_user=root catalina_pid=/usr/local/tomcat/apache-tomcat-9.0.34/bin/catalina.pid statusurl=http://54.180.138.85:8080/ op monitor interval=30s
+# sudo pcs resource create TomcatService ocf:heartbeat:tomcat java_home=/usr/local/java/jdk1.8.0_251 catalina_home=/usr/local/tomcat/apache-tomcat-9.0.34 tomcat_user=root op monitor interval=30s
+
+---- 현재 등록된 서비스 확인 후 톰캣 서비스 등록
+# systemctl list-units --type service
+/usr/lib/systemd/system 위치에 다양한 서비스 존재
+# cd /usr/lib/systemd/system
+# sudo vim tomcat.service
+# sudo systemctl daemon-reload
+톰캣 서비스 작성 후
+# sudo systemctl start tomcat
+하고 ip:8080으로 접속해서 확인
+
+묶어줌
+# pcs constraint colocation add VirtualIP with TomcatService INFINITY
+
+현재 2번기의 tomcat@tomcat.service가 문제인듯
+
+systemctl start tomcat@tomcat.service 로 확인해보자
+--> tomcat 리소스 등록시 statusurl 빼기
+
+머신 reboot시 자동으로 cluster 켜지게 할려면 각 장비에서 아래 명령어 실행
+# sudo pcs cluster enable wolf1
+# sudo pcs cluster enable wolf2
+
+FailOver테스트
+톰캣이나 mysql 프로세스를 죽이면 해당 머신에 이상 없으면 해당 머신에서 다시 살아난다.
+reboot로 머신을 재기동하면 1번기에서 2번기로, 2번기에서 1번기로 FailOver 정상적으로 동작한다.
+
+-- 이제 확인해야봐야 할 것은
+Tomcat session 유지 되는가?
+MariadDB Replication을 하루에 한번은 해야되지 않을까? --> 크론?
+아니면 그냥 2개가 동시 띄워져 있으면 되지 않을까? --> 안되는 듯
+
+
+-- MariadDB resource 등록하는법
+# pcs cluster cib mariadb_cfg
+# pcs -f mariadb_cfg resource create MariaDBService ocf:heartbeat:mysql datadir=/var/data/mysql socket=/var/data/mysql/mysql.sock pid=/var/data/mysql/mysql.pid config=/etc/my.cnf replication_user=pgteam replication_passwd=pgteam1101! replication_port=3306 op promote timeout=120 op demote timeout=120 op monitor role=Master timeout=30 interval=10 op monitor role=Slave timeout=30 interval=20 op notify timeout=60s interval=0s
+# pcs -f mariadb_cfg resource master msMariadb MariaDBService master-max=2 master-node-max=1 clone-max=2 clone-node-max=1 notify=true
+# pcs cluster cib-push mariadb_cfg
+
+> 이렇게 한다음 1번기의 master_host를 바꾼다.
+MariaDB > change master to
+    -> MASTER_HOST='172.31.0.222',
+    -> MASTER_USE_GTID=SLAVE_POS;
+
+-- MariadDB resource 삭제하는법
+# pcs resource delete MariaDBService
+
+
+*******************************************************************************************************************************
+*******************************************************************************************************************************
+*********************************************   이것이 해답이다 ***************************************************************
+*******************************************************************************************************************************
+*******************************************************************************************************************************
+##### 다른 방법 master:slave
+# pcs resource create MariaDBService ocf:heartbeat:mysql datadir=/var/data/mysql socket=/var/data/mysql/mysql.sock pid=/var/data/mysql/mysql.pid config=/etc/my.cnf replication_user=pgteam replication_passwd=pgteam1101! replication_port=3306 op promote timeout=120 interval=0 op demote timeout=120 interval=0 op monitor role=Master timeout=30 interval=10 op notify timeout=60s interval=0s
+# pcs resource master msMariadb MariaDBService master-max=1 master-node-max=1 clone-max=2 clone-node-max=1 notify=true
+# pcs constraint colocation add master msMariadb with VirtualIP INFINITY

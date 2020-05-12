@@ -1,0 +1,35 @@
+totem {
+    version: 2
+    cluster_name: wolf_cluster
+    secauth: off
+    transport: udpu
+    interface {
+      ringnumber: 0
+      bindnetaddr: wolf1
+      broadcast: yes
+      mcastport: 5405
+    }
+}
+
+nodelist {
+    node {
+        ring0_addr: wolf1
+        nodeid: 1
+    }
+
+    node {
+        ring0_addr: wolf2
+        nodeid: 2
+    }
+}
+
+quorum {
+    provider: corosync_votequorum
+    two_node: 1
+}
+
+logging {
+    to_logfile: yes
+    logfile: /var/log/cluster/corosync.log
+    to_syslog: yes
+}

@@ -1,0 +1,10 @@
+키워드
+ - HAProxy
+ - 클러스터LVM
+ - Pacemaker
+ - Linux Virtual Server
+ - Distributed Replicated Block Device
+ - Linux HA Heartbeat
+ - Cluster Suite
+ - Health Monitor
+ - Mysql MON

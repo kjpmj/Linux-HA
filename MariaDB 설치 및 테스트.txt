@@ -1,0 +1,155 @@
+1. 접속후 timezone 확인 및 변경
+# date
+# sudo cp -p /usr/share/zoneinfo/Asia/Seoul /etc/localtime
+
+2. MariaDB 설치
+# sudo yum install mariadb-server
+
+3. config 파일 수정
+# sudo vi /etc/my.cnf
+
+4. MariaDB Start
+# sudo systemctl start mariadb
+
+5. MariaDB 상태 확인
+# systemctl status mariadb
+
+6. MariaDB 접속
+# mysql -u root
+
+7. root 계정 비밀번호 변경
+MariaDB > use mysql;
+MariaDB > update user set password=PASSWORD("maria1101!") where User='root';
+MariaDB > flush privileges;
+MariaDB > quit;
+
+8. 비밀번호 확인
+# mysql -u root -p
+
+9. database 생성
+MariaDB > create database pgbase;
+
+10. user 생성
+MariaDB > create user 'pgteam' identified by 'pgteam1101!';
+
+11. 권한 부여
+MariaDB > grant all privileges on *.* to pgteam@'localhost' identified by 'pgteam1101!';
+MariaDB > grant all privileges on pgbase.* to pgteam@'210.108.217.%' identified by 'pgteam1101!';
+MariaDB > flush privileges;
+
+12. 확인
+# mysql -u pgteam -p
+
+13. MariaDB 종료
+# sudo systemctl stop mariadb
+
+14. MariaDB datadir 변경
+# cd /var/data/
+# sudo mkdir mysql
+# sudo rsync -av /var/lib/mysql/ /var/data/mysql
+
+15. /etc/my.cnf datadir 변경
+datadir=/var/data/mysql
+socket=/var/data/mysql/mysql.sock
+
+16. client sock 위치 변경
+# sudo vim /etc/my.cnf.d/mysql-clients.cnf
+socket = /var/data/mysql/mysql.sock
+
+17. MariaDB 다시 기동하고 datadir 변경됬는지 확인
+MariaDB > select @@datadir
+
+
+******** Replication 설정 *********
+
+1. 마스터 /etc/my.cnf 파일 수정
+[mysqld] 에 아래내용추가
+server_id = 1
+log-bin
+log-basename = node1
+
+2. 재기동
+
+3. User Grant 설정
+MariaDB > grant all privileges on pgbase.* to pgteam@'172.31.0.222' identified by 'pgteam1101!';
+MariaDB > GRANT REPLICATION CLIENT ON *.* TO 'pgteam'@'localhost' identified by 'pgteam1101!';
+MariaDB > grant replication slave on *.* to 'pgteam'@'172.31.0.222' identified by 'pgteam1101!';
+MariaDB > flush privileges;
+
+4. 마스터 정보 확인
+MariaDB > show master status;
++--------------------+----------+--------------+------------------+
+| File               | Position | Binlog_Do_DB | Binlog_Ignore_DB |
++--------------------+----------+--------------+------------------+
+| master1-bin.000001 |      245 |              |                  |
++--------------------+----------+--------------+------------------+
+파일명과 Position 기억
+
+5. 슬레이브 /etc/my.cnf 파일 수정
+[mysqld] 에 아래내용 추가
+server_id = 2
+log-bin
+log-basename = node2
+
+6. mariadb 재기동
+# sudo systemctl restart mariadb
+
+7. server_id 확인
+MariaDB > show variables like 'server_id';
+
+8. master 설정 변경
+MariaDB > change master to
+    -> MASTER_HOST='172.31.14.161',
+    -> MASTER_USER='pgteam',
+    -> MASTER_PASSWORD='pgteam1101!',
+    -> MASTER_PORT=3306,
+    -> MASTER_LOG_FILE='master-bin.000001',
+    -> MASTER_LOG_POS=245,
+    -> MASTER_CONNECT_RETRY=10,
+    -> MASTER_USE_GTID=SLAVE_POS;
+
+장애난 node의 mariadb 인스턴스를 올린 후에는 start slave로 다시 slave를 시작해야 replication 된다.
+
+SET GLOBAL rpl_semi_sync_master_enabled='ON', rpl_semi_sync_slave_enabled='ON';
+
+9. slave 시작
+MariaDB > start slave;
+
+10. 동작확인
+MariaDB > show slave status\G;
+Slave_IO_Running와 Slave_SQL_Running이 모두 Yes,
+Read_Master_Log_Pos와 Exec_Master_Log_Pos 값이 일치,
+Last_Errno는 0, Last_Error는 공란, Seconds_Behind_Master이 0이면 정상 복제중
+
+11. 양방향으로 하려면 위의 과정을 Master 쪽에 해서 서로가 마스터 슬레이브가 되도록 한다.
+
+
+replication 설정시 외부 IP로 하면 Toad에서 select 할시 바로 적용 되는데 내부 IP로 하면 다시 연결해야함... 음.. 어차피 pacemaker가 관리하는 거라면 상관 없을 듯
+
+SELECT USER, HOST, SUPER_PRIV, REPL_CLIENT_PRIV FROM mysql.user;
+
+위 쿼리를 쳤을때 pgteam@localhost 계정이 super_priv, repl_client_priv가 Y여야 pacemaker로 replication 할 때 정상 동작한다.
+
+--- mariadb master, slave 초기화
+MariaDB > stop slave;
+MariaDB > reset slave;
+MariaDB > reset master;
+
+# systemctl restart mariadb
+
+-- default master connection 등록 하는법
+
+MariaDB > show variables like '%MASTER%';
+MariaDB > SET @@default_master_connection='dm';
+MariaDB > change master 'dm' to
+    -> MASTER_HOST='172.31.14.161',
+    -> MASTER_USER='pgteam',
+    -> MASTER_PASSWORD='pgteam1101!',
+    -> MASTER_PORT=3306,
+    -> MASTER_LOG_FILE='master-bin.000001',
+    -> MASTER_LOG_POS=245,
+    -> MASTER_CONNECT_RETRY=10,
+    -> MASTER_USE_GTID=SLAVE_POS;
+
+MariaDB > start slave 'dm';
+MariaDB > show slave 'dm' status\G;

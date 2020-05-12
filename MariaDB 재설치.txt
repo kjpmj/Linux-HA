@@ -1,0 +1,37 @@
+-- 설치된 MariaDB 조회
+# yum list installed mariadb\*
+
+-- MariaDB 삭제
+# yum remove -y 조회된 이름
+
+-- yum 정보 등록
+# vim /etc/yum.repos.d/maria.repo
+
+아래 정보는 OS 별로 상이
+https://downloads.mariadb.org/mariadb/repositories/#mirror=uberglobal 여기서 확인해 볼것
+
+# MariaDB 10.4 RedHat repository list - created 2020-05-06 08:25 UTC
+# http://downloads.mariadb.org/mariadb/repositories/
+[mariadb]
+name = MariaDB
+baseurl = http://yum.mariadb.org/10.4/rhel7-amd64
+gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB
+gpgcheck=1
+~
+
+-- MariaDB 설치
+# yum install MariaDB-server
+
+
+-- replication 설정 중에 아래와 같은 오류가 뜬다면
+Unable to load replication GTID slave state from mysql.gtid_slave_pos: Table 'mysql.gtid_slave_pos' doesn't exist
+
+CREATE TABLE `mysql`.`gtid_slave_pos` (
+`domain_id` int(10) unsigned NOT NULL,
+`sub_id` bigint(20) unsigned NOT NULL,
+`server_id` int(10) unsigned NOT NULL,
+`seq_no` bigint(20) unsigned NOT NULL,
+PRIMARY KEY (`domain_id`,`sub_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1 COMMENT='Replication slave GTID position';
+
+위 스크립트 실행 할것

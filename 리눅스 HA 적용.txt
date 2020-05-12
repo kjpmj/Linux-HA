@@ -207,3 +207,5 @@ MariaDB > change master to
 # pcs resource create MariaDBService ocf:heartbeat:mysql datadir=/var/data/mysql socket=/var/data/mysql/mysql.sock pid=/var/data/mysql/mysql.pid config=/etc/my.cnf replication_user=pgteam replication_passwd=pgteam1101! replication_port=3306 op promote timeout=120 interval=0 op demote timeout=120 interval=0 op monitor role=Master timeout=30 interval=10 op notify timeout=60s interval=0s
 # pcs resource master msMariadb MariaDBService master-max=1 master-node-max=1 clone-max=2 clone-node-max=1 notify=true
 # pcs constraint colocation add master msMariadb with VirtualIP INFINITY
+# pcs constraint order VirtualIP then msMariadb
+# pcs constraint order msMariadb then TomcatService
